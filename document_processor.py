@@ -47,13 +47,17 @@ class DocumentProcessor:
             # Handle tables specially
             for shape in slide.shapes:
                 if hasattr(shape, "has_table") and shape.has_table:
-                    table = shape.table
-                    for row_idx, row in enumerate(table.rows):
-                        row_text = []
-                        for cell in row.cells:
-                            if cell.text:
-                                row_text.append(cell.text.strip())
-                        text += " | ".join(row_text) + "\n"
+                    try:
+                        table = shape.table
+                        for row_idx, row in enumerate(table.rows):
+                            row_text = []
+                            for cell in row.cells:
+                                if cell.text:
+                                    row_text.append(cell.text.strip())
+                            text += " | ".join(row_text) + "\n"
+                    except AttributeError:
+                        # Skip if there's an issue accessing the table
+                        pass
         
         # Clean up
         os.unlink(tmp_path)

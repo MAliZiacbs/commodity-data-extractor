@@ -20,22 +20,30 @@ API_TOKEN = st.secrets.get("API_TOKEN", "")
 def extract_commodity_data(document_content):
     """Extract structured information from the document using Llama 3"""
     
-    # Construct the prompt for Llama 3
+    # Construct the prompt for Llama 3 with more specific formatting instructions
     system_message = """You are an expert data extraction system specialized in analyzing commodity strategy documents.
 Your task is to extract specific information from documents and structure it as a valid JSON.
 Focus only on extracting factual information present in the document.
-When information is missing, use null or empty arrays rather than making up information."""
+When information is missing, use null or empty arrays rather than making up information.
+Maintain consistent data structures for all array items."""
 
     user_message = f"""Please analyze the following commodity strategy document and extract this information into a JSON structure:
 
 1. commodity_name: The name of the commodity being discussed (e.g., Sugar, Dairy, Oils)
-2. responsible_managers: Who is responsible for this commodity
+2. responsible_managers: Who is responsible for this commodity - as an array of strings
 3. creation_date: When the document was created
 4. valid_until: The expiration date of the strategy
 5. cost_drivers: A dictionary containing cost breakdown components (like labor, raw materials, energy) with their percentages
-6. quantitative_initiatives: An array of initiatives with their IDs, descriptions, values in EUR, and status
-7. qualitative_initiatives: An array of non-monetary initiatives 
-8. swot_analysis: A dictionary with arrays for strengths, weaknesses, opportunities, and threats
+6. quantitative_initiatives: An array of objects, each with:
+   - id: initiative ID string
+   - description: description of the initiative
+   - value_eur: monetary value in EUR or null if not specified
+   - status: current status or null if not specified
+7. qualitative_initiatives: An array of objects, each with:
+   - id: numeric identifier or string (or null if not available)
+   - title: short title of the initiative
+   - description: longer description (or null if not available)
+8. swot_analysis: A dictionary with arrays for strengths, weaknesses, opportunities, threats
 9. sustainability_factors: Any sustainability information like deforestation risk, emissions, etc.
 
 Document content:
@@ -93,6 +101,8 @@ Return ONLY a valid JSON object with no additional text. If information is not a
                 # Parse the JSON
                 try:
                     data = json.loads(json_str)
+                    # Standardize the extracted data
+                    data = standardize_data(data)
                     return data
                 except json.JSONDecodeError as e:
                     return {"error": f"Failed to parse JSON: {str(e)}", "raw_response": response_text}
@@ -110,7 +120,77 @@ Return ONLY a valid JSON object with no additional text. If information is not a
     except Exception as e:
         return {"error": f"Request failed: {str(e)}"}
 
-def process_large_document(document_content, max_tokens=7000):
+def standardize_data(data):
+    """Standardize the data format for consistent display"""
+    if not isinstance(data, dict):
+        return data
+    
+    # Standardize qualitative initiatives
+    if "qualitative_initiatives" in data and isinstance(data["qualitative_initiatives"], list):
+        standardized = []
+        for i, item in enumerate(data["qualitative_initiatives"]):
+            if isinstance(item, str):
+                # Convert string to structured object
+                standardized.append({
+                    "id": f"Q{i+1}",
+                    "title": item,
+                    "description": None
+                })
+            elif isinstance(item, dict):
+                # Ensure all dict items have the same structure
+                if "id" not in item:
+                    item["id"] = f"Q{i+1}"
+                if "title" not in item:
+                    item["title"] = item.get("description", f"Initiative {i+1}")
+                if "description" not in item:
+                    item["description"] = None
+                standardized.append(item)
+        data["qualitative_initiatives"] = standardized
+    
+    # Standardize quantitative initiatives
+    if "quantitative_initiatives" in data and isinstance(data["quantitative_initiatives"], list):
+        standardized = []
+        for i, item in enumerate(data["quantitative_initiatives"]):
+            if isinstance(item, str):
+                # Convert string to structured object
+                standardized.append({
+                    "id": f"QT{i+1}",
+                    "description": item,
+                    "value_eur": None,
+                    "status": None
+                })
+            elif isinstance(item, dict):
+                # Ensure all dict items have the same structure
+                if "id" not in item:
+                    item["id"] = f"QT{i+1}"
+                if "description" not in item:
+                    item["description"] = f"Initiative {i+1}"
+                if "value_eur" not in item:
+                    item["value_eur"] = None
+                if "status" not in item:
+                    item["status"] = None
+                standardized.append(item)
+        data["quantitative_initiatives"] = standardized
+    
+    # Ensure responsible_managers is always an array
+    if "responsible_managers" in data:
+        if isinstance(data["responsible_managers"], str):
+            data["responsible_managers"] = [data["responsible_managers"]]
+        elif not isinstance(data["responsible_managers"], list):
+            data["responsible_managers"] = []
+    
+    # Ensure swot_analysis structure
+    if "swot_analysis" in data and isinstance(data["swot_analysis"], dict):
+        swot = data["swot_analysis"]
+        for key in ["strengths", "weaknesses", "opportunities", "threats"]:
+            if key not in swot:
+                swot[key] = []
+            elif not isinstance(swot[key], list):
+                swot[key] = [swot[key]]
+    
+    return data
+
+def process_large_document(document_content, max_tokens=6500):
     """Split large documents into processable chunks"""
     
     # Simple chunking strategy - split by pages/slides
@@ -123,13 +203,16 @@ def process_large_document(document_content, max_tokens=7000):
     if "--- Page" in document_content or "--- Slide" in document_content:
         # Split by page/slide markers
         sections = []
+        current_section = ""
         for line in document_content.split("\n"):
             if line.startswith("--- Page") or line.startswith("--- Slide"):
-                sections.append(line)
-            elif sections:
-                sections[-1] += "\n" + line
+                if current_section:
+                    sections.append(current_section)
+                current_section = line
             else:
-                sections.append(line)
+                current_section += "\n" + line
+        if current_section:
+            sections.append(current_section)
     else:
         # Split by paragraphs (double newlines)
         sections = document_content.split("\n\n")
@@ -162,7 +245,7 @@ def extract_from_large_document(document_content):
     # Check if document needs chunking
     token_estimate = len(document_content.split()) * 1.3
     
-    if token_estimate > 7000:  # Less than model's max to allow for prompt and response
+    if token_estimate > 6500:  # Less than model's max to allow for prompt and response
         st.warning(f"Document is large ({int(token_estimate)} estimated tokens). Processing in multiple steps...")
         
         # Split document into chunks
@@ -203,40 +286,74 @@ def extract_from_large_document(document_content):
                 )
                 merged_result["cost_drivers"] = most_complete
             
-            # Merge arrays from all results
-            for field in ["quantitative_initiatives", "qualitative_initiatives"]:
-                all_items = []
-                for result in all_results:
-                    if field in result and isinstance(result[field], list):
-                        all_items.extend(result[field])
-                
-                # Remove duplicates based on descriptions
-                if all_items:
-                    unique_items = []
-                    descriptions = set()
-                    for item in all_items:
+            # Merge arrays from all results with standardization
+            merged_result["quantitative_initiatives"] = []
+            merged_result["qualitative_initiatives"] = []
+            
+            # Track descriptions to avoid duplicates
+            quant_descriptions = set()
+            qual_titles = set()
+            
+            # Merge quantitative initiatives
+            for result in all_results:
+                if "quantitative_initiatives" in result and isinstance(result["quantitative_initiatives"], list):
+                    for item in result["quantitative_initiatives"]:
                         if isinstance(item, dict) and "description" in item:
                             desc = item["description"]
-                            if desc not in descriptions:
-                                descriptions.add(desc)
-                                unique_items.append(item)
-                        else:
-                            unique_items.append(item)
-                    merged_result[field] = unique_items
-                else:
-                    merged_result[field] = []
+                            if desc not in quant_descriptions:
+                                quant_descriptions.add(desc)
+                                # Ensure standard format
+                                standardized_item = {
+                                    "id": item.get("id", f"QT{len(merged_result['quantitative_initiatives'])+1}"),
+                                    "description": desc,
+                                    "value_eur": item.get("value_eur"),
+                                    "status": item.get("status")
+                                }
+                                merged_result["quantitative_initiatives"].append(standardized_item)
+                        elif isinstance(item, str) and item not in quant_descriptions:
+                            quant_descriptions.add(item)
+                            merged_result["quantitative_initiatives"].append({
+                                "id": f"QT{len(merged_result['quantitative_initiatives'])+1}",
+                                "description": item,
+                                "value_eur": None,
+                                "status": None
+                            })
+            
+            # Merge qualitative initiatives
+            for result in all_results:
+                if "qualitative_initiatives" in result and isinstance(result["qualitative_initiatives"], list):
+                    for item in result["qualitative_initiatives"]:
+                        if isinstance(item, dict):
+                            title = item.get("title", item.get("description", ""))
+                            if title and title not in qual_titles:
+                                qual_titles.add(title)
+                                # Ensure standard format
+                                standardized_item = {
+                                    "id": item.get("id", f"Q{len(merged_result['qualitative_initiatives'])+1}"),
+                                    "title": title,
+                                    "description": item.get("description")
+                                }
+                                merged_result["qualitative_initiatives"].append(standardized_item)
+                        elif isinstance(item, str) and item not in qual_titles:
+                            qual_titles.add(item)
+                            merged_result["qualitative_initiatives"].append({
+                                "id": f"Q{len(merged_result['qualitative_initiatives'])+1}",
+                                "title": item,
+                                "description": None
+                            })
             
             # Merge SWOT
             swot_merged = {"strengths": [], "weaknesses": [], "opportunities": [], "threats": []}
+            swot_items = {key: set() for key in swot_merged}
+            
             for result in all_results:
                 if "swot_analysis" in result and isinstance(result["swot_analysis"], dict):
-                    for key in ["strengths", "weaknesses", "opportunities", "threats"]:
+                    for key in swot_merged:
                         if key in result["swot_analysis"] and isinstance(result["swot_analysis"][key], list):
-                            swot_merged[key].extend(result["swot_analysis"][key])
-            
-            # Remove duplicates in SWOT
-            for key in swot_merged:
-                swot_merged[key] = list(set(swot_merged[key]))
+                            for item in result["swot_analysis"][key]:
+                                if isinstance(item, str) and item not in swot_items[key]:
+                                    swot_items[key].add(item)
+                                    swot_merged[key].append(item)
             
             merged_result["swot_analysis"] = swot_merged
             
@@ -249,6 +366,8 @@ def extract_from_large_document(document_content):
                 )
                 merged_result["sustainability_factors"] = most_complete
             
+            # Final standardization pass
+            merged_result = standardize_data(merged_result)
             return merged_result
         else:
             return {"error": "Failed to process any chunks successfully"}
@@ -269,40 +388,51 @@ def display_structured_data(data):
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Commodity", data.get("commodity_name", "Unknown"))
+            
+            # Display responsible managers
+            managers = data.get("responsible_managers", [])
+            if isinstance(managers, list):
+                st.write("**Responsible Managers:**")
+                for manager in managers:
+                    st.write(f"- {manager}")
+            else:
+                st.write(f"**Responsible Manager:** {managers}")
+                
             st.write(f"**Created:** {data.get('creation_date', 'Unknown')}")
-        with col2:
-            st.write(f"**Manager:** {data.get('responsible_managers', 'Unknown')}")
             st.write(f"**Valid until:** {data.get('valid_until', 'Unknown')}")
         
         # Cost drivers
-        st.subheader("Cost Drivers")
-        cost_drivers = data.get("cost_drivers", {})
-        if cost_drivers and isinstance(cost_drivers, dict):
-            # Clean percentage values for chart
-            cleaned_data = {}
-            for k, v in cost_drivers.items():
-                if isinstance(v, str):
-                    # Handle percentage strings
-                    cleaned_val = v.replace('%', '').replace('k€', '').strip()
-                    try:
-                        cleaned_data[k] = float(cleaned_val)
-                    except ValueError:
-                        # If conversion fails, use original
-                        cleaned_data[k] = v
-                else:
-                    cleaned_data[k] = v
-            
-            # Create a horizontal bar chart
-            cost_df = pd.DataFrame({
-                'Component': list(cleaned_data.keys()),
-                'Value': list(cleaned_data.values())
-            })
-            st.bar_chart(cost_df.set_index('Component'))
-        else:
-            st.write("No cost driver information available")
+        with col2:
+            st.subheader("Cost Drivers")
+            cost_drivers = data.get("cost_drivers", {})
+            if cost_drivers and isinstance(cost_drivers, dict):
+                # Clean and sort the values for better visualization
+                cleaned_data = {}
+                for k, v in cost_drivers.items():
+                    key = k.replace("_", " ").capitalize()
+                    if isinstance(v, str):
+                        # Handle percentage strings
+                        cleaned_val = v.replace('%', '').replace('k€', '').strip()
+                        try:
+                            cleaned_data[key] = float(cleaned_val)
+                        except ValueError:
+                            # If conversion fails, use original
+                            cleaned_data[key] = v
+                    else:
+                        cleaned_data[key] = v
+                
+                # Create a horizontal bar chart of top cost components
+                cost_df = pd.DataFrame({
+                    'Component': list(cleaned_data.keys()),
+                    'Value': list(cleaned_data.values())
+                })
+                cost_df = cost_df.sort_values('Value', ascending=False)
+                st.bar_chart(cost_df.set_index('Component'))
+            else:
+                st.write("No cost driver information available")
     
     with tab2:
-        # SWOT Analysis
+        # Create columns for SWOT
         st.header("SWOT Analysis")
         swot = data.get("swot_analysis", {})
         if swot and isinstance(swot, dict):
@@ -340,9 +470,27 @@ def display_structured_data(data):
         if quant_initiatives and isinstance(quant_initiatives, list) and len(quant_initiatives) > 0:
             st.subheader("Quantitative Initiatives")
             
-            # Convert to DataFrame for better display
-            init_df = pd.DataFrame(quant_initiatives)
-            st.dataframe(init_df)
+            # Create display data in consistent format
+            display_data = []
+            for item in quant_initiatives:
+                if isinstance(item, dict):
+                    display_data.append({
+                        "ID": item.get("id", ""),
+                        "Description": item.get("description", ""),
+                        "Value (EUR)": item.get("value_eur", ""),
+                        "Status": item.get("status", "")
+                    })
+                else:
+                    display_data.append({
+                        "ID": "",
+                        "Description": str(item),
+                        "Value (EUR)": "",
+                        "Status": ""
+                    })
+            
+            # Convert to DataFrame for display
+            init_df = pd.DataFrame(display_data)
+            st.dataframe(init_df, use_container_width=True)
         else:
             st.write("No quantitative initiatives available")
         
@@ -351,18 +499,73 @@ def display_structured_data(data):
         if qual_initiatives and isinstance(qual_initiatives, list) and len(qual_initiatives) > 0:
             st.subheader("Qualitative Initiatives")
             
-            # Convert to DataFrame for better display
-            qual_df = pd.DataFrame(qual_initiatives)
-            st.dataframe(qual_df)
+            # Create display data in consistent format
+            display_data = []
+            for item in qual_initiatives:
+                if isinstance(item, dict):
+                    display_data.append({
+                        "ID": item.get("id", ""),
+                        "Title": item.get("title", ""),
+                        "Description": item.get("description", "")
+                    })
+                else:
+                    display_data.append({
+                        "ID": "",
+                        "Title": str(item),
+                        "Description": ""
+                    })
+            
+            # Convert to DataFrame for display
+            qual_df = pd.DataFrame(display_data)
+            st.dataframe(qual_df, use_container_width=True)
         else:
             st.write("No qualitative initiatives available")
         
         # Sustainability
-        st.subheader("Sustainability Factors")
+        st.header("Sustainability Factors")
         sustainability = data.get("sustainability_factors", {})
         if sustainability and isinstance(sustainability, dict):
+            # Display non-nested values first
+            simple_factors = {}
+            complex_factors = {}
+            
             for key, value in sustainability.items():
-                st.write(f"**{key.replace('_', ' ').title()}:** {value}")
+                if isinstance(value, (dict, list)):
+                    complex_factors[key] = value
+                else:
+                    simple_factors[key] = value
+            
+            # Display simple factors in columns
+            if simple_factors:
+                cols = st.columns(2)
+                items_per_col = (len(simple_factors) + 1) // 2
+                
+                for i, (key, value) in enumerate(simple_factors.items()):
+                    col_idx = 0 if i < items_per_col else 1
+                    with cols[col_idx]:
+                        # Format the display nicely
+                        display_key = key.replace('_', ' ').title()
+                        if value is True:
+                            st.write(f"**{display_key}:** ✅")
+                        elif value is False:
+                            st.write(f"**{display_key}:** ❌")
+                        elif value is None:
+                            st.write(f"**{display_key}:** Not available")
+                        else:
+                            st.write(f"**{display_key}:** {value}")
+            
+            # Display complex factors (like EcoVadis ratings)
+            for key, value in complex_factors.items():
+                st.subheader(key.replace('_', ' ').title())
+                
+                if isinstance(value, dict):
+                    # Display as table
+                    df = pd.DataFrame({"Entity": list(value.keys()), "Value": list(value.values())})
+                    st.dataframe(df, use_container_width=True)
+                elif isinstance(value, list):
+                    # Display as bullet points
+                    for item in value:
+                        st.write(f"• {item}")
         else:
             st.write("No sustainability information available")
     
