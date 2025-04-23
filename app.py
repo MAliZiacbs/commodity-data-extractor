@@ -20,16 +20,13 @@ API_TOKEN = st.secrets.get("API_TOKEN", "")
 def extract_commodity_data(document_content):
     """Extract structured information from the document using Llama 3"""
     
-    # Construct the system prompt for Llama 3
-    prompt = """<|system|>
-You are an expert data extraction system specialized in analyzing commodity strategy documents.
+    # Construct the prompt for Llama 3
+    system_message = """You are an expert data extraction system specialized in analyzing commodity strategy documents.
 Your task is to extract specific information from documents and structure it as a valid JSON.
 Focus only on extracting factual information present in the document.
-When information is missing, use null or empty arrays rather than making up information.
-</|system|>
+When information is missing, use null or empty arrays rather than making up information."""
 
-<|user|>
-Please analyze the following commodity strategy document and extract this information into a JSON structure:
+    user_message = f"""Please analyze the following commodity strategy document and extract this information into a JSON structure:
 
 1. commodity_name: The name of the commodity being discussed (e.g., Sugar, Dairy, Oils)
 2. responsible_managers: Who is responsible for this commodity
@@ -42,21 +39,18 @@ Please analyze the following commodity strategy document and extract this inform
 9. sustainability_factors: Any sustainability information like deforestation risk, emissions, etc.
 
 Document content:
-{content}
+{document_content}
 
-Return ONLY a valid JSON object with no additional text. If information is not available, include the key with an empty value or appropriate placeholder.
-</|user|>"""
+Return ONLY a valid JSON object with no additional text. If information is not available, include the key with an empty value or appropriate placeholder."""
     
-    # Replace placeholder with actual content
-    prompt = prompt.replace("{content}", document_content)
-    
-    # Prepare the request payload for Databricks serving endpoint
+    # Prepare the request payload for Databricks serving endpoint - using 'messages' format
     payload = {
-        "inputs": [{
-            "prompt": prompt,
-            "temperature": 0.1,
-            "max_tokens": 4000
-        }]
+        "messages": [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_message}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4000
     }
     
     # Set up headers
@@ -79,8 +73,8 @@ Return ONLY a valid JSON object with no additional text. If information is not a
             result = response.json()
             
             # Extract the assistant's response
-            if "predictions" in result and len(result["predictions"]) > 0:
-                response_text = result["predictions"][0]
+            if "choices" in result and len(result["choices"]) > 0 and "message" in result["choices"][0]:
+                response_text = result["choices"][0]["message"]["content"]
                 
                 # Parse JSON from the response
                 if "```json" in response_text:
@@ -103,16 +97,9 @@ Return ONLY a valid JSON object with no additional text. If information is not a
                 except json.JSONDecodeError as e:
                     return {"error": f"Failed to parse JSON: {str(e)}", "raw_response": response_text}
             else:
-                return {"error": "No predictions in response", "raw_response": result}
+                return {"error": "No valid response format", "raw_response": result}
         elif response.status_code == 400:
-            # Check if this is a token limit issue
-            if "context_length_exceeded" in str(response.text) or "maximum context length" in str(response.text):
-                return {
-                    "error": "Document too large for model's context window",
-                    "solution": "Try extracting specific information or processing in chunks"
-                }
-            else:
-                return {"error": f"API Error (400): {response.text}"}
+            return {"error": f"API Error (400): {response.text}"}
         elif response.status_code == 401 or response.status_code == 403:
             return {"error": "Authentication error - check your API token"}
         elif response.status_code >= 500:
