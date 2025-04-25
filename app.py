@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # Access API configuration from Streamlit secrets
-API_URL = st.secrets.get("API_URL", "https://adb-360063509637705.5.azuredatabricks.net/serving-endpoints/databricks-meta-llama-3-3-70b-instruct/invocations")
+API_URL = st.secrets.get("API_URL", "https://adb-360063509637705.5.azuredatabricks.net/serving-endpoints/databricks-claude-3-7-sonnet/invocations")
 API_TOKEN = st.secrets.get("API_TOKEN", "")
 
 def extract_commodity_data(document_content):
