@@ -591,7 +591,7 @@ st.write("Upload a commodity strategy document (PDF or PowerPoint) to extract st
 with st.sidebar:
     st.header("About")
     st.write("""
-    This application uses Meta's Llama 3 70B model to extract structured data 
+    This application uses Anthropic's Claude 3.7 Sonnet model to extract structured data 
     from commodity strategy documents.
     
     Upload your document to begin the extraction process.
@@ -628,7 +628,7 @@ if uploaded_file is not None:
     
     # Extract data button
     if st.button("Extract Structured Data"):
-        with st.spinner("Analyzing with Llama 3 70B... (this may take a minute)"):
+        with st.spinner("Analyzing with Claude Sonnet 3.7... (this may take a minute)"):
             # Call function that handles large documents
             result = extract_from_large_document(document_content)
             
